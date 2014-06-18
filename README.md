@@ -62,6 +62,25 @@ X-Nick-Name: nickname of user in IDM
 X-Display-Name: display name in IDM
 </pre>
 
+Authorization based on IdM Roles
+================================
+
+PEP-Proxy can be used to authorized requests based on user roles in IdM. To use
+this feature the config must be set to:
+
+```
+config.check_roles_services = true;
+
+// NOTE: port is required
+config.account_host = <<https://idm.host:443>>
+
+// NOTE: default value extract Service from Role
+config.idm_role_regexp = '^\.*-(\.*)$';
+
+// NOTE: a list with privileged roles (ie: roles for which all requests are allowed)
+config.privileged_roles = ['adminprovider'];
+```
+
 ## License
 
 The MIT License

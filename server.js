@@ -1,6 +1,7 @@
 var config = require('./config'),
     atob = require('atob'),
-    proxy = require('./lib/HTTPClient.js');
+    proxy = require('./lib/HTTPClient.js'),
+    url = require('url');
 
 var express = require('express'),
     XMLHttpRequest = require("./lib/xmlhttprequest").XMLHttpRequest;
@@ -10,6 +11,9 @@ process.on('uncaughtException', function (err) {
 });
 
 var app = express();
+
+config['idmUrl'] = url.parse(config.account_host)
+config['roleRegexp'] = new RegExp(config.idm_role_regexp)
 
 //app.use(express.bodyParser());
 
@@ -100,6 +104,58 @@ var checkToken = function(token, callback, callbackError) {
     });
 };
 
+var getIdmUser = function(token, callback, callbackError) {
+    var idmUrl = config.idmUrl
+    var protocol = idmUrl.protocol.slice(0, -1)
+    var options = {
+        host: idmUrl.hostname,
+        port: idmUrl.port,
+        path: "/user?access_token=" + token,
+        method: 'GET',
+        headers: {'Accept': 'application/json'}
+    }
+
+    proxy.sendData(protocol, options, undefined, undefined,
+        callback, callbackError);
+}
+
+var extractService = function(role) {
+    var matched = config.roleRegexp.exec(role.name)
+    return matched ? matched[1] : null
+}
+
+var isValidUser = function(roles, requestedService) {
+    return roles.map(extractService).indexOf(requestedService) != -1
+}
+
+var isPrivilegedRole = function(privilegedRoles, role) {
+    return privilegedRoles.indexOf(role.name) != -1
+}
+
+var isPrivilegedUser = function(privilegedRoles, roles) {
+    return roles.some(isPrivilegedRole.bind(null, privilegedRoles))
+}
+
+var checkIdmUser = function(requestedService, token, callback, callbackError) {
+    getIdmUser(token, 
+        function(status, res) {
+            var user = JSON.parse(res)
+            if (isPrivilegedUser(config.privileged_roles, user.roles) ||
+                isValidUser(user.roles, requestedService)) {
+                callback(200, res)
+            } else {
+                callbackError(404, undefined)
+            }
+        }, 
+        callbackError)
+}
+
+var getCheckFunction = function(requestedService) {
+    return config.check_roles_services 
+            ? checkIdmUser.bind(null, requestedService) 
+            : checkToken
+}
+
 app.all('/*', function(req, res) {
 	
 	var auth_token = req.headers['x-auth-token'];
@@ -114,7 +170,10 @@ app.all('/*', function(req, res) {
         res.set('WWW-Authenticate', auth_header);
 		res.send(401, 'Auth-token not found in request header');
 	} else {
-		checkToken(auth_token, function (status, resp) {
+
+        var checkFunction = getCheckFunction(req.headers['fiware-service'])
+
+		checkFunction(auth_token, function (status, resp) {
 
             var userInfo = JSON.parse(resp);
             console.log('Access-token OK. Redirecting to app.');
@@ -132,7 +191,7 @@ app.all('/*', function(req, res) {
 		    proxy.sendData('http', options, req.body, res);
 
 		}, function (status, e) {
-			if (status === 404) {
+			if (status === 404 || status === 401) {
                 console.log('User access-token not authorized');
                 res.send(401, 'User token not authorized');
             } else {
@@ -145,17 +204,21 @@ app.all('/*', function(req, res) {
 	
 });
 
-console.log('Starting PEP proxy. Keystone authentication ...');
 
-authenticate (function (status, resp) {
-
-    myToken = JSON.parse(resp).access.token.id;
-
-    console.log('Success authenticating PEP proxy. Proxy Auth-token: ', myToken);
+if (config.check_roles_services) {
+    console.log('Starting PEP proxy.')
     app.listen(app.get('port'));
+} else {
+    console.log('Starting PEP proxy. Keystone authentication ...');
+    authenticate (function (status, resp) {
 
-}, function (status, e) {
-    console.log('Error in keystone communication', e);
-});
+        myToken = JSON.parse(resp).access.token.id;
 
+        console.log('Success authenticating PEP proxy. Proxy Auth-token: ', myToken);
+        app.listen(app.get('port'));
+
+    }, function (status, e) {
+        console.log('Error in keystone communication', e);
+    });
+}
 
